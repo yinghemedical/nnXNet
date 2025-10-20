@@ -15,7 +15,6 @@ class nnXNetDataLoader3DWithGlobalCls(nnXNetDataLoaderBase):
         """
         super().__init__(*args, **kwargs)
         
-        # 定义权重文件路径
         self.case_sampling_weight_path = os.path.join("/yinghepool/shipengcheng/Dataset/nnUNet", 'train_case_sampling_weight.csv')
         self.csv_path = os.path.join("/yinghepool/shipengcheng/Dataset/nnUNet", 'train_augmented.csv')
         
