@@ -139,7 +139,7 @@ class Skeletonize(torch.nn.Module):
                            [1.0, 1.0, 1.0]]], device=img.device).view(1, 1, 3, 3, 3)
 
         num_twentysix_neighbors = F.conv3d(img, K)
-        condition1 = F.hardtanh(-(num_twentysix_neighbors - 2), min_val=0, max_val=1) # 1 or fewer neigbors
+        condition1 = F.hardtanh(-(num_twentysix_neighbors - 2), min_val=0, max_val=1) # 1 or fewer neighbors
         
         return condition1
 
@@ -189,7 +189,7 @@ class Skeletonize(torch.nn.Module):
         num_twentysix_neighbors = F.conv3d(img, K_N26, stride=2)
 
         subcondition2a = F.hardtanh(num_twentysix_neighbors, min_val=0, max_val=1) # 1 or more neighbors
-        subcondition2b = F.hardtanh(-(num_twentysix_neighbors - 2), min_val=0, max_val=1) # 1 or fewer neigbors
+        subcondition2b = F.hardtanh(-(num_twentysix_neighbors - 2), min_val=0, max_val=1) # 1 or fewer neighbors
         
         condition2 =  subcondition2a * subcondition2b
 
@@ -208,9 +208,9 @@ class Skeletonize(torch.nn.Module):
         num_eighteen_neighbors = F.conv3d(img, K_N18, stride=2)
 
         subcondition3a = F.hardtanh(num_eighteen_neighbors, min_val=0, max_val=1) # 1 or more neighbors
-        subcondition3b = F.hardtanh(-(num_eighteen_neighbors - 2), min_val=0, max_val=1) # 1 or fewer neigbors
+        subcondition3b = F.hardtanh(-(num_eighteen_neighbors - 2), min_val=0, max_val=1) # 1 or fewer neighbors
 
-        # ... and cell configration B26 does not exist
+        # ... and cell configuration B26 does not exist
         K_B26 =  torch.tensor([[[1.0, -1.0, 0.0],
                                 [-1.0, -1.0, 0.0],
                                 [0.0, 0.0, 0.0]],
