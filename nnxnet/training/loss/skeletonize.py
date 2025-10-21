@@ -9,7 +9,7 @@ class Skeletonize(torch.nn.Module):
     while being fully compatible with PyTorch's autograd automatic differention engine as proposed in [1].
 
     Attributes:
-        propabilistic: a Boolean that indicates whether the input image should be binarized using
+        probabilistic: a Boolean that indicates whether the input image should be binarized using
                        the reparametrization trick and straight-through estimator.
                        It should always be set to True if non-binary inputs are being provided.
         beta: scale of added logistic noise during the reparametrization trick. If too small, there will not be any learning via
