@@ -25,11 +25,7 @@ keywords = [
     'multi-task learning',
     'medical image segmentation',
     'medical image classification',
-<<<<<<< HEAD
     'nnX-Net',
-=======
-    'nnU-Xet',
->>>>>>> 490397d (add cls from csv)
     'nnxnet'
 ]
 dependencies = [
