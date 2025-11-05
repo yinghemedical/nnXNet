@@ -122,6 +122,10 @@ class ConfigurationManager(object):
         return self.configuration['patch_size']
     
     @property
+    def seg_loss_weight(self) -> float:
+        return self.configuration['seg_loss_weight']
+
+    @property
     def pos_weights_list(self) -> List[int]:
         return self.configuration['pos_weights_list']
     

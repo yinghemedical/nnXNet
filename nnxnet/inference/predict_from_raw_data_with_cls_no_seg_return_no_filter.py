@@ -93,9 +93,9 @@ class nnXNetPredictor(object):
 
         configuration_manager = plans_manager.get_configuration(configuration_name)
         self.seg_index = configuration_manager.seg_index
-        self.cls_task_index = configuration_manager.cls_task_index
+        self.pos_weights_list = configuration_manager.pos_weights_list
         self.cls_head_num_classes_list = configuration_manager.network_arch_init_kwargs["cls_head_num_classes_list"]
-        self.num_cls_task = len(self.cls_task_index)
+        self.num_cls_task = len(self.pos_weights_list)
 
         # restore network
         num_input_channels = determine_num_input_channels(plans_manager, configuration_manager, dataset_json)
@@ -301,19 +301,6 @@ class nnXNetPredictor(object):
                                                 output_filenames_truncated, self.plans_manager, self.dataset_json,
                                                 self.configuration_manager, num_processes, self.device.type == 'cuda',
                                                 self.verbose_preprocessing)
-        # preprocessor = self.configuration_manager.preprocessor_class(verbose=self.verbose_preprocessing)
-        # # hijack batchgenerators, yo
-        # # we use the multiprocessing of the batchgenerators dataloader to handle all the background worker stuff. This
-        # # way we don't have to reinvent the wheel here.
-        # num_processes = max(1, min(num_processes, len(input_list_of_lists)))
-        # ppa = PreprocessAdapter(input_list_of_lists, seg_from_prev_stage_files, preprocessor,
-        #                         output_filenames_truncated, self.plans_manager, self.dataset_json,
-        #                         self.configuration_manager, num_processes)
-        # if num_processes == 0:
-        #     mta = SingleThreadedAugmenter(ppa, None)
-        # else:
-        #     mta = MultiThreadedAugmenter(ppa, None, num_processes, 1, None, pin_memory=pin_memory)
-        # return mta
 
     def get_data_iterator_from_raw_npy_data(self,
                                             image_or_list_of_images: Union[np.ndarray, List[np.ndarray]],
@@ -558,12 +545,7 @@ class nnXNetPredictor(object):
 
     def _internal_maybe_mirror_and_predict(self, x: torch.Tensor) -> torch.Tensor:
         mirror_axes = self.allowed_mirroring_axes if self.use_mirroring else None
-        prediction, cls_pred_list = self.network(x)
-        # for t_i in range(self.num_cls_task):
-        #     print("cls_pred_list[t_i].shape: ", cls_pred_list[t_i].shape)
-        
-        # cls_pred_list[t_i].shape:  torch.Size([1, 1])
-        # cls_pred_list[t_i].shape:  torch.Size([1, 13])
+        cls_pred_list = self.network(x, only_forward_cls=True)
 
         if mirror_axes is not None:
             # check for invalid numbers in mirror_axes
@@ -575,22 +557,20 @@ class nnXNetPredictor(object):
                 c for i in range(len(mirror_axes)) for c in itertools.combinations(mirror_axes, i + 1)
             ]
             for axes in axes_combinations:
-                flipped_pred, flipped_cls_pred_list = self.network(torch.flip(x, axes))
+                flipped_cls_pred_list = self.network(torch.flip(x, axes), only_forward_cls=True)
                 for t_i in range(self.num_cls_task):
                     cls_pred_list[t_i] += flipped_cls_pred_list[t_i]
-                prediction += torch.flip(flipped_pred, axes)
-            prediction /= (len(axes_combinations) + 1)
 
             for t_i in range(self.num_cls_task):
                 cls_pred_list[t_i] /= (len(axes_combinations) + 1)
-        return prediction, cls_pred_list
+        return cls_pred_list
     
     def _internal_predict_sliding_window_return_logits(self,
                                                        data: torch.Tensor,
                                                        slicers,
                                                        do_on_device: bool = True,
                                                        ):
-        prediction = workon = None
+        workon = None
         results_device = self.device if do_on_device else torch.device('cpu')
 
         try:
@@ -604,57 +584,27 @@ class nnXNetPredictor(object):
             # preallocate arrays
             if self.verbose:
                 print(f'preallocating results arrays on device {results_device}')
-            # predicted_logits = torch.zeros((len(self.seg_index) + 1, *data.shape[1:]),
-            #                                dtype=torch.half,
-            #                                device=results_device)
             cls_predicted_logits_list = []
             for t_i in range(self.num_cls_task):
                 cls_predicted_logits_list.append(torch.full((self.cls_head_num_classes_list[t_i],), 
                                                             -torch.inf,
                                                             dtype=torch.half,
                                                             device=results_device))
-
-            # n_predictions = torch.zeros(data.shape[1:], dtype=torch.half, device=results_device)
-
+                
             if not self.allow_tqdm and self.verbose:
                 print(f'running prediction: {len(slicers)} steps')
             for sl in tqdm(slicers, disable=not self.allow_tqdm):
                 workon = data[sl][None]
                 workon = workon.to(self.device)
 
-                _, cls_pred_list = self._internal_maybe_mirror_and_predict(workon)
-                # print("results_device: ", results_device)
-                # prediction = prediction_batch[0] #.to(results_device)
-
-                # if self.use_gaussian:
-                #     prediction *= self.gaussian
-
-                # seg = torch.argmax(prediction, dim=0)
-                # voxel_count = torch.sum(seg == 14).item()
-
-                # print("voxel_count: ", voxel_count)
-
-                # for t_i in range(self.num_cls_task):
-                #     if voxel_count < 10: # 20:
-                #         continue
-                #     else:
+                cls_pred_list = self._internal_maybe_mirror_and_predict(workon)
 
                 for t_i in range(self.num_cls_task):
                     cls_pred_batch = cls_pred_list[t_i].to(results_device)
                     cls_predicted_logits_list[t_i] = torch.max(cls_predicted_logits_list[t_i], cls_pred_batch[0])
-                    # print("cls_predicted_logits_list[t_i]: ", cls_predicted_logits_list[t_i])
 
-                # predicted_logits[sl] += prediction
-                # n_predictions[sl[1:]] += gaussian
-
-            # predicted_logits /= n_predictions
-            # check for infs
-            # if torch.any(torch.isinf(predicted_logits)):
-            #     raise RuntimeError('Encountered inf in predicted array. Aborting... If this problem persists, '
-            #                        'reduce value_scaling_factor in compute_gaussian or increase the dtype of '
-            #                        'predicted_logits to fp32')
         except Exception as e:
-            del prediction, gaussian, workon
+            del workon
             empty_cache(self.device)
             empty_cache(results_device)
             raise e

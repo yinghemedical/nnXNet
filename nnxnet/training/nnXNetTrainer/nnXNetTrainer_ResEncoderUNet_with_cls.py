@@ -45,10 +45,13 @@ class nnXNetTrainer_ResEncoderUNet_with_cls(nnXNetTrainer):
         self.cls_task_index = self.configuration_manager.cls_task_index
         self.cls_head_num_classes_list = self.configuration_manager.network_arch_init_kwargs["cls_head_num_classes_list"]
         self.seg_index = self.configuration_manager.seg_index
+        self.print_to_log_file("seg_index: ", self.seg_index)
+        self.print_to_log_file("cls_task_index: ", self.cls_task_index)
         self.seg_ce_class_weights = self.configuration_manager.seg_ce_class_weights
         self._init_mapping()
 
         self.num_cls_task = len(self.cls_task_index)
+        self.checkpoint_t_index = 0
 
         pos_weights_list = self.configuration_manager.pos_weights_list
 
@@ -61,7 +64,8 @@ class nnXNetTrainer_ResEncoderUNet_with_cls(nnXNetTrainer):
         self.print_to_log_file(f"Using pos_weights_list: {self.pos_weights_list}")
 
         self.logger = nnXNetLogger(num_cls_task=self.num_cls_task)
-        self.seg_loss_weight = 1.0
+        self.seg_loss_weight = self.configuration_manager.seg_loss_weight
+        self.print_to_log_file(f"Using seg_loss_weight: {self.seg_loss_weight}")
 
         self.save_every = 5
         self.num_iterations_per_epoch = 250
@@ -501,6 +505,8 @@ class nnXNetTrainer_ResEncoderUNet_with_cls(nnXNetTrainer):
                     auc_list.append(0.5)
 
             auc = np.mean(auc_list)
+            if t_index == self.checkpoint_t_index:
+                checkpoint_auc = auc
             
             cls_preds = (cls_probs > 0.5).astype(int)
             acc = accuracy_score(cls_targets.flatten(), cls_preds.flatten())
@@ -524,6 +530,7 @@ class nnXNetTrainer_ResEncoderUNet_with_cls(nnXNetTrainer):
                     ])
 
         # Log segmentation metrics
+        self.logger.log('mean_auc', checkpoint_auc, self.current_epoch)
         self.logger.log('mean_fg_dice', mean_fg_dice, self.current_epoch)
         self.logger.log('dice_per_class_or_region', global_dc_per_class, self.current_epoch)
         self.logger.log('val_losses', loss_here, self.current_epoch)

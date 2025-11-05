@@ -14,7 +14,7 @@ from torch._dynamo import OptimizedModule
 from nnxnet.training.nnXNetTrainer.variants.network_architecture.ResEncoderUNet_two_seg_with_cls import ResEncoderUNet_two_seg_with_cls
 from nnxnet.training.nnXNetTrainer.nnXNetTrainer import nnXNetTrainer
 from nnxnet.training.dataloading.nnxnet_dataset import nnXNetDataset
-from nnxnet.training.dataloading.data_loader_3d_with_global_cls import nnXNetDataLoader3DWithGlobalCls
+from nnxnet.training.dataloading.data_loader_3d_with_global_cls_for_RSNA2025 import nnXNetDataLoader3DWithGlobalCls
 from nnxnet.training.data_augmentation.compute_initial_patch_size import get_patch_size
 from nnxnet.configuration import ANISO_THRESHOLD, default_num_processes
 from nnxnet.evaluation.evaluate_predictions import compute_metrics_on_folder
@@ -61,6 +61,7 @@ class nnXNetTrainer_ResEncoderUNet_two_seg_with_cls(nnXNetTrainer):
                 'Basilar Tip', 'Other Posterior Circulation']
 
         self.num_cls_task = len(self.cls_task_index)
+        self.checkpoint_t_index = 0
         self.use_sampling_weight = 'vessel' #'modality'
 
         pos_weights_list = self.configuration_manager.pos_weights_list
@@ -686,6 +687,8 @@ class nnXNetTrainer_ResEncoderUNet_two_seg_with_cls(nnXNetTrainer):
                         print(f"  - {category}")
 
             auc = np.mean(auc_list)
+            if t_index == self.checkpoint_t_index:
+                checkpoint_auc = auc
             
             cls_preds = (cls_probs > 0.5).astype(int)
             acc = accuracy_score(cls_targets.flatten(), cls_preds.flatten())
@@ -704,6 +707,7 @@ class nnXNetTrainer_ResEncoderUNet_two_seg_with_cls(nnXNetTrainer):
             self.logger.my_fantastic_logging['dice_per_class_or_region_1'] = list()
             self.logger.my_fantastic_logging['dice_per_class_or_region_2'] = list()
 
+        self.logger.log('mean_auc', checkpoint_auc, self.current_epoch)
         self.logger.log('mean_fg_dice_1', mean_fg_dice_1, self.current_epoch)
         self.logger.log('dice_per_class_or_region_1', global_dc_per_class_1, self.current_epoch)
         

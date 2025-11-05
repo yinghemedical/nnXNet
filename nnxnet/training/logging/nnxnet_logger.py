@@ -21,10 +21,8 @@ class nnXNetLogger(object):
             'ema_fg_dice': list(),
             'ema_fg_dice_1': list(),
             'ema_fg_dice_2': list(),
-            'mean_auc': list(),  # Case-level mean AUC
-            'mean_patch_auc': list(),  # Patch-level mean AUC
+            'mean_auc': list(),
             'ema_auc': list(),
-            'ema_patch_auc': list(),  # EMA for patch-level AUC
             'dice_per_class_or_region': list(),
             'dice_per_class_or_region_1': list(),
             'dice_per_class_or_region_2': list(),
@@ -32,8 +30,6 @@ class nnXNetLogger(object):
             'total_cls_val_losses': list(),
             'train_losses': list(),
             'val_losses': list(),
-            'val_patch_loss': list(),  # Total patch-level validation loss
-            'val_case_loss': list(),  # Total case-level validation loss
             'lrs': list(),
             'epoch_start_timestamps': list(),
             'epoch_end_timestamps': list()
@@ -43,9 +39,6 @@ class nnXNetLogger(object):
             self.my_fantastic_logging[f'cls_task_{t_index}_acc'] = list()  # Case-level accuracy
             self.my_fantastic_logging[f'cls_task_{t_index}_auc'] = list()  # Case-level AUC
             self.my_fantastic_logging[f'cls_task_{t_index}_loss'] = list()  # Case-level loss
-            self.my_fantastic_logging[f'cls_task_{t_index}_patch_acc'] = list()  # Patch-level accuracy
-            self.my_fantastic_logging[f'cls_task_{t_index}_patch_auc'] = list()  # Patch-level AUC
-            self.my_fantastic_logging[f'cls_task_{t_index}_patch_loss'] = list()  # Patch-level loss
 
         self.my_fantastic_logging[f'cls_modality_acc'] = list()
         self.my_fantastic_logging[f'cls_modality_auc'] = list()
@@ -74,23 +67,24 @@ class nnXNetLogger(object):
 
         # Handle EMA for mean_auc
         if key == 'mean_auc':
-            new_ema_auc = self.my_fantastic_logging['ema_auc'][epoch - 1] * 0.9 + 0.1 * value \
-                if len(self.my_fantastic_logging['ema_auc']) > 0 else value
+            # Check if there's a previous epoch's EMA to use
+            if epoch > 0 and len(self.my_fantastic_logging['ema_auc']) >= epoch:
+                new_ema_auc = self.my_fantastic_logging['ema_auc'][epoch - 1] * 0.9 + 0.1 * value
+            else:
+                new_ema_auc = value
             self.log('ema_auc', new_ema_auc, epoch)
-
-        # Handle EMA for mean_patch_auc
-        if key == 'mean_patch_auc':
-            new_ema_patch_auc = self.my_fantastic_logging['ema_patch_auc'][epoch - 1] * 0.9 + 0.1 * value \
-                if len(self.my_fantastic_logging['ema_patch_auc']) > 0 else value
-            self.log('ema_patch_auc', new_ema_patch_auc, epoch)
 
         # Handle EMA for mean_fg_dice
         if key == 'mean_fg_dice':
-            new_ema_pseudo_dice = self.my_fantastic_logging['ema_fg_dice'][epoch - 1] * 0.9 + 0.1 * value \
-                if len(self.my_fantastic_logging['ema_fg_dice']) > 0 else value
+            # Check if there's a previous epoch's EMA to use
+            if epoch > 0 and len(self.my_fantastic_logging['ema_fg_dice']) >= epoch:
+                new_ema_pseudo_dice = self.my_fantastic_logging['ema_fg_dice'][epoch - 1] * 0.9 + 0.1 * value
+            else:
+                new_ema_pseudo_dice = value
             self.log('ema_fg_dice', new_ema_pseudo_dice, epoch)
         
         if key == 'mean_fg_dice_1':
+            # Using [-1] is acceptable for EMA if we know we just logged the previous value
             new_ema_pseudo_dice = self.my_fantastic_logging['ema_fg_dice_1'][-1] * 0.9 + 0.1 * value \
                 if len(self.my_fantastic_logging['ema_fg_dice_1']) > 0 else value
             self.log('ema_fg_dice_1', new_ema_pseudo_dice, epoch)
@@ -109,17 +103,30 @@ class nnXNetLogger(object):
             print("No data available for plotting")
             return
         
+        # Determine if we have AUC data
+        has_auc_data = len(self.my_fantastic_logging.get('mean_auc', [])) >= epoch + 1
+        
+        # Determine total number of subplots: 4 fixed plots + 1 for AUC if present
+        num_subplots = 4 + (1 if has_auc_data else 0)
+        
         sns.set(font_scale=2.5)
-        fig, ax_all = plt.subplots(4, 1, figsize=(30, 72))
+        # Create the figure with the appropriate number of subplots
+        fig, ax_all = plt.subplots(num_subplots, 1, figsize=(30, 18 * num_subplots))
+        
+        # Ensure ax_all is always iterable, even for a single subplot (which won't happen here, but good practice)
+        if num_subplots == 1:
+            ax_all = [ax_all]
 
-        # Plot 1: Losses (train, val, patch, case)
-        ax = ax_all[0]
+        # Index tracker for subplots
+        ax_idx = 0
+
+        # ---
+        ## Plot 1: Losses (train, val)
+        ax = ax_all[ax_idx]
         x_values = list(range(epoch + 1))
         
-        # Track if we have any data to plot for legend
         has_legend_data = False
         
-        # Check and plot each loss metric only if it has sufficient data
         if len(self.my_fantastic_logging['train_losses']) >= epoch + 1:
             ax.plot(x_values, self.my_fantastic_logging['train_losses'][:epoch + 1], color='b', ls='-', label="train_loss", linewidth=4)
             has_legend_data = True
@@ -132,97 +139,85 @@ class nnXNetLogger(object):
         ax.set_ylabel("loss")
         if has_legend_data:
             ax.legend(loc=(0, 1))
+        
+        ax_idx += 1
 
-        # Plot 2: AUC (case and patch)
-        ax = ax_all[1]
-        ax2 = ax.twinx()
-        
-        has_legend_data_ax = False
-        has_legend_data_ax2 = False
-        
-        if 'mean_auc' in self.my_fantastic_logging and 'mean_fg_dice' in self.my_fantastic_logging:
-            # print("len(self.my_fantastic_logging['mean_auc']): ", len(self.my_fantastic_logging['mean_auc']))
-            # print("epoch + 1: ", epoch + 1)
+        # ---
+        ## Plot 2 (or 1 depending on AUC): Dice and other AUC (if no separate AUC)
+
+        # Separate AUC subplot if data is present
+        if has_auc_data:
+            # ---
+            ## Plot 2: AUC (separate subplot)
+            ax = ax_all[ax_idx]
+            has_legend_data_auc = False
+            
             if len(self.my_fantastic_logging['mean_auc']) >= epoch + 1:
-                ax.plot(x_values, self.my_fantastic_logging['mean_auc'][:epoch + 1], color='g', ls='dotted', label="case_auc", linewidth=3)
-                has_legend_data_ax = True
+                ax.plot(x_values, self.my_fantastic_logging['mean_auc'][:epoch + 1], color='b', ls='dotted', label="case_auc", linewidth=3)
+                has_legend_data_auc = True
             
             if len(self.my_fantastic_logging['ema_auc']) >= epoch + 1:
-                ax.plot(x_values, self.my_fantastic_logging['ema_auc'][:epoch + 1], color='g', ls='-', label="case_auc (mov. avg.)", linewidth=4)
-                has_legend_data_ax = True
+                ax.plot(x_values, self.my_fantastic_logging['ema_auc'][:epoch + 1], color='b', ls='-', label="case_auc (mov. avg.)", linewidth=4)
+                has_legend_data_auc = True
             
-            if len(self.my_fantastic_logging['mean_patch_auc']) >= epoch + 1:
-                ax.plot(x_values, self.my_fantastic_logging['mean_patch_auc'][:epoch + 1], color='y', ls='dotted', label="patch_auc", linewidth=3)
-                has_legend_data_ax = True
-            
-            if len(self.my_fantastic_logging['ema_patch_auc']) >= epoch + 1:
-                ax.plot(x_values, self.my_fantastic_logging['ema_patch_auc'][:epoch + 1], color='y', ls='-', label="patch_auc (mov. avg.)", linewidth=4)
-                has_legend_data_ax = True
-            
+            ax.set_xlabel("epoch")
             ax.set_ylabel("AUC")
-            
-            if has_legend_data_ax:
+            if has_legend_data_auc:
                 ax.legend(loc=(0, 1))
+            
+            ax_idx += 1
+            
+            # ---
+            ## Plot 3: Foreground Dice (next subplot)
+            ax = ax_all[ax_idx]
+            has_legend_data_dice = False
             
             if len(self.my_fantastic_logging['mean_fg_dice']) >= epoch + 1:
-                ax2.plot(x_values, self.my_fantastic_logging['mean_fg_dice'][:epoch + 1], color='g', ls='dotted', label="pseudo_dice", linewidth=3)
-                has_legend_data_ax2 = True
+                ax.plot(x_values, self.my_fantastic_logging['mean_fg_dice'][:epoch + 1], color='g', ls='dotted', label="pseudo_dice", linewidth=3)
+                has_legend_data_dice = True
             
             if len(self.my_fantastic_logging['ema_fg_dice']) >= epoch + 1:
-                ax2.plot(x_values, self.my_fantastic_logging['ema_fg_dice'][:epoch + 1], color='g', ls='-', label="pseudo_dice (mov. avg.)", linewidth=4)
-                has_legend_data_ax2 = True
-            
-            ax2.set_ylabel("pseudo dice")
-            if has_legend_data_ax2:
-                ax2.legend(loc=(0.2, 1))
-
-        elif 'mean_auc' in self.my_fantastic_logging:
-            # print("len(self.my_fantastic_logging['mean_auc']): ", len(self.my_fantastic_logging['mean_auc']))
-            # print("epoch + 1: ", epoch + 1)
-            if len(self.my_fantastic_logging['mean_auc']) >= epoch + 1:
-                ax.plot(x_values, self.my_fantastic_logging['mean_auc'][:epoch + 1], color='g', ls='dotted', label="case_auc", linewidth=3)
-                has_legend_data_ax = True
-            
-            if len(self.my_fantastic_logging['ema_auc']) >= epoch + 1:
-                ax.plot(x_values, self.my_fantastic_logging['ema_auc'][:epoch + 1], color='g', ls='-', label="case_auc (mov. avg.)", linewidth=4)
-                has_legend_data_ax = True
-            
-            if len(self.my_fantastic_logging['mean_patch_auc']) >= epoch + 1:
-                ax.plot(x_values, self.my_fantastic_logging['mean_patch_auc'][:epoch + 1], color='y', ls='dotted', label="patch_auc", linewidth=3)
-                has_legend_data_ax = True
-            
-            if len(self.my_fantastic_logging['ema_patch_auc']) >= epoch + 1:
-                ax.plot(x_values, self.my_fantastic_logging['ema_patch_auc'][:epoch + 1], color='y', ls='-', label="patch_auc (mov. avg.)", linewidth=4)
-                has_legend_data_ax = True
-            
-            ax.set_ylabel("AUC")
-            if has_legend_data_ax:
+                ax.plot(x_values, self.my_fantastic_logging['ema_fg_dice'][:epoch + 1], color='g', ls='-', label="pseudo_dice (mov. avg.)", linewidth=4)
+                has_legend_data_dice = True
+                
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("pseudo dice")
+            if has_legend_data_dice:
                 ax.legend(loc=(0, 1))
+            
+            ax_idx += 1
+            
         else:
+            ## Plot 2: Dice (when no AUC data is present)
+            ax = ax_all[ax_idx]
+            has_legend_data_dice = False
+            
             if len(self.my_fantastic_logging['mean_fg_dice']) >= epoch + 1:
-                ax2.plot(x_values, self.my_fantastic_logging['mean_fg_dice'][:epoch + 1], color='g', ls='dotted', label="pseudo_dice", linewidth=3)
-                has_legend_data_ax2 = True
+                ax.plot(x_values, self.my_fantastic_logging['mean_fg_dice'][:epoch + 1], color='g', ls='dotted', label="pseudo_dice", linewidth=3)
+                has_legend_data_dice = True
             
             if len(self.my_fantastic_logging['ema_fg_dice']) >= epoch + 1:
-                ax2.plot(x_values, self.my_fantastic_logging['ema_fg_dice'][:epoch + 1], color='g', ls='-', label="pseudo_dice (mov. avg.)", linewidth=4)
-                has_legend_data_ax2 = True
+                ax.plot(x_values, self.my_fantastic_logging['ema_fg_dice'][:epoch + 1], color='g', ls='-', label="pseudo_dice (mov. avg.)", linewidth=4)
+                has_legend_data_dice = True
+                
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("pseudo dice")
+            if has_legend_data_dice:
+                ax.legend(loc=(0, 1))
             
-            ax2.set_ylabel("pseudo dice")
-            if has_legend_data_ax2:
-                ax2.legend(loc=(0.2, 1))
-        
-        ax.set_xlabel("epoch")
+            ax_idx += 1
 
-        # Plot 3: Epoch duration
-        ax = ax_all[2]
+        ## Plot (2 or 3): Epoch duration
+        ax = ax_all[ax_idx]
         has_legend_data = False
         
         if (len(self.my_fantastic_logging['epoch_end_timestamps']) >= epoch + 1 and 
             len(self.my_fantastic_logging['epoch_start_timestamps']) >= epoch + 1):
             
             durations = [i - j for i, j in zip(self.my_fantastic_logging['epoch_end_timestamps'][:epoch + 1],
-                                            self.my_fantastic_logging['epoch_start_timestamps'][:epoch + 1])]
+                                             self.my_fantastic_logging['epoch_start_timestamps'][:epoch + 1])]
             ax.plot(x_values, durations, color='b', ls='-', label="epoch_duration", linewidth=4)
+            # Ensure y-axis starts at 0 for duration
             ylim = [0] + [ax.get_ylim()[1]]
             ax.set(ylim=ylim)
             has_legend_data = True
@@ -232,8 +227,11 @@ class nnXNetLogger(object):
         if has_legend_data:
             ax.legend(loc=(0, 1))
 
-        # Plot 4: Learning rate
-        ax = ax_all[3]
+        ax_idx += 1
+
+        # ---
+        ## Plot (3 or 4): Learning rate
+        ax = ax_all[ax_idx]
         has_legend_data = False
         
         if len(self.my_fantastic_logging['lrs']) >= epoch + 1:
