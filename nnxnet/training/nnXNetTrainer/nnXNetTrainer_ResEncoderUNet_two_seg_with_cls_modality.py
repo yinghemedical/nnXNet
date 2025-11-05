@@ -876,10 +876,10 @@ class nnXNetTrainer_ResEncoderUNet_two_seg_with_cls_modality(nnXNetTrainer):
         if (current_epoch + 1) % self.save_every == 0 and current_epoch != (self.num_epochs - 1):
             self.save_checkpoint(os.path.join(self.output_folder, 'checkpoint_latest.pth'))
 
-        if 'ema_fg_dice' in self.logger.my_fantastic_logging:
-            if self._best_ema is None or self.logger.my_fantastic_logging['ema_fg_dice'][-1] > self._best_ema:
-                self._best_ema = self.logger.my_fantastic_logging['ema_fg_dice'][-1]
-                self.print_to_log_file(f"Yayy! New best EMA pseudo Dice: {np.round(self._best_ema, decimals=4)}")
+        if 'ema_auc' in self.logger.my_fantastic_logging:
+            if self._best_ema is None or self.logger.my_fantastic_logging['ema_auc'][-1] > self._best_ema:
+                self._best_ema = self.logger.my_fantastic_logging['ema_auc'][-1]
+                self.print_to_log_file(f"Yayy! New best EMA AUC: {np.round(self._best_ema, decimals=4)}")
                 self.save_checkpoint(os.path.join(self.output_folder, 'checkpoint_best.pth'))
 
         if self.local_rank == 0:
