@@ -93,6 +93,9 @@ class nnXNetPredictor(object):
 
         configuration_manager = plans_manager.get_configuration(configuration_name)
         self.seg_index = configuration_manager.seg_index
+        self.cls_head_num_classes_list = configuration_manager.network_arch_init_kwargs["cls_head_num_classes_list"]
+        pos_weights_list = configuration_manager.pos_weights_list
+        self.num_cls_task = len(pos_weights_list)
 
         # restore network
         num_input_channels = determine_num_input_channels(plans_manager, configuration_manager, dataset_json)
@@ -149,6 +152,32 @@ class nnXNetPredictor(object):
         if allow_compile:
             print('Using torch.compile')
             self.network = torch.compile(self.network)
+    
+    def initialize_network_and_gaussian(self):
+        """
+        Initializes the network by loading parameters, setting it to evaluation mode,
+        moving it to the specified device, and precomputing the Gaussian weights if needed.
+
+        Args:
+            self: The instance containing network, list_of_parameters, device,
+                configuration_manager, and use_gaussian attributes.
+        """
+        # Load network parameters and set to evaluation mode
+        if isinstance(self.network, OptimizedModule):
+            self.network._orig_mod.load_state_dict(self.list_of_parameters[0])
+        else:
+            self.network.load_state_dict(self.list_of_parameters[0])
+
+        self.network.to(self.device).eval()
+        empty_cache(self.device)
+
+        # Precompute Gaussian once
+        self.gaussian = compute_gaussian(
+            tuple(self.configuration_manager.patch_size),
+            sigma_scale=1. / 8,
+            value_scaling_factor=10,
+            device=self.device
+        ) if self.use_gaussian else 1
 
     @staticmethod
     def auto_detect_available_folds(model_training_output_dir, checkpoint_name):
@@ -376,7 +405,10 @@ class nnXNetPredictor(object):
                     sleep(0.1)
                     proceed = not check_workers_alive_and_busy(export_pool, worker_list, r, allowed_num_queued=2)
 
-                prediction = self.predict_logits_from_preprocessed_data(data).cpu()
+                prediction, cls_pred_list = self.predict_logits_from_preprocessed_data(data)
+                prediction = prediction.cpu()
+                for t_i in range(self.num_cls_task):
+                    cls_pred_list[t_i] = cls_pred_list[t_i].cpu()
 
                 if ofile is not None:
                     # this needs to go into background processes
@@ -449,7 +481,11 @@ class nnXNetPredictor(object):
 
         if self.verbose:
             print('predicting')
-        predicted_logits = self.predict_logits_from_preprocessed_data(dct['data']).cpu()
+        predicted_logits, cls_predicted_logits_list = self.predict_logits_from_preprocessed_data(dct['data'])
+        predicted_logits = predicted_logits.cpu()
+
+        for t_i in range(self.num_cls_task):
+            cls_predicted_logits_list[t_i] = cls_predicted_logits_list[t_i].cpu()
 
         if self.verbose:
             print('resampling to original shape')
@@ -464,10 +500,12 @@ class nnXNetPredictor(object):
                                                                               dct['data_properties'],
                                                                               return_probabilities=
                                                                               save_or_return_probabilities)
-            if save_or_return_probabilities:
-                return ret[0], ret[1]
-            else:
-                return ret
+            
+            cls_prob_list = []
+            for t_i in range(self.num_cls_task):
+                cls_prob_list.append(torch.sigmoid(cls_predicted_logits_list[t_i]))
+
+            return ret, cls_prob_list
 
     def predict_logits_from_preprocessed_data(self, data: torch.Tensor) -> torch.Tensor:
         """
@@ -480,6 +518,7 @@ class nnXNetPredictor(object):
         n_threads = torch.get_num_threads()
         torch.set_num_threads(default_num_processes if default_num_processes < n_threads else n_threads)
         prediction = None
+        cls_pred_list = None
 
         for params in self.list_of_parameters:
             
@@ -492,17 +531,28 @@ class nnXNetPredictor(object):
             # why not leave prediction on device if perform_everything_on_device? Because this may cause the
             # second iteration to crash due to OOM. Grabbing that with try except cause way more bloated code than
             # this actually saves computation time
-            if prediction is None:
-                prediction = self.predict_sliding_window_return_logits(data).to('cpu')
+            if prediction is None and cls_pred_list is None:
+                prediction, cls_pred_list = self.predict_sliding_window_return_logits(data)
+                prediction = prediction.to('cpu')
+                for t_i in range(self.num_cls_task):
+                    cls_pred_list[t_i] = cls_pred_list[t_i].to('cpu')
             else:
-                prediction += self.predict_sliding_window_return_logits(data).to('cpu')
+                prediction_sw, cls_pred_list_tmp = self.predict_sliding_window_return_logits(data)
+                prediction_sw = prediction_sw.to('cpu')
+                prediction += prediction_sw
+
+                for t_i in range(self.num_cls_task):
+                    cls_pred_list[t_i] += cls_pred_list_tmp[t_i].to('cpu')
 
         if len(self.list_of_parameters) > 1:
             prediction /= len(self.list_of_parameters)
 
+            for t_i in range(self.num_cls_task):
+                cls_pred_list[t_i] /= len(self.list_of_parameters)
+
         if self.verbose: print('Prediction done')
         torch.set_num_threads(n_threads)
-        return prediction
+        return prediction, cls_pred_list
 
     def _internal_get_sliding_window_slicers(self, image_size: Tuple[int, ...]):
         slicers = []
@@ -540,7 +590,7 @@ class nnXNetPredictor(object):
 
     def _internal_maybe_mirror_and_predict(self, x: torch.Tensor) -> torch.Tensor:
         mirror_axes = self.allowed_mirroring_axes if self.use_mirroring else None
-        prediction, _ = self.network(x)
+        prediction, cls_pred_list = self.network(x, only_forward_cls=False)
 
         if mirror_axes is not None:
             # check for invalid numbers in mirror_axes
@@ -552,10 +602,15 @@ class nnXNetPredictor(object):
                 c for i in range(len(mirror_axes)) for c in itertools.combinations(mirror_axes, i + 1)
             ]
             for axes in axes_combinations:
-                flipped_pred, _ = self.network(torch.flip(x, axes))
-                prediction += torch.flip(flipped_pred, axes)
+                prediction_flip, flipped_cls_pred_list = self.network(torch.flip(x, axes))
+                for t_i in range(self.num_cls_task):
+                    cls_pred_list[t_i] += flipped_cls_pred_list[t_i]
+                prediction += torch.flip(prediction_flip, axes)
             prediction /= (len(axes_combinations) + 1)
-        return prediction
+
+            for t_i in range(self.num_cls_task):
+                cls_pred_list[t_i] /= (len(axes_combinations) + 1)
+        return prediction, cls_pred_list
     
     def _internal_predict_sliding_window_return_logits(self,
                                                        data: torch.Tensor,
@@ -576,6 +631,14 @@ class nnXNetPredictor(object):
             # preallocate arrays
             if self.verbose:
                 print(f'preallocating results arrays on device {results_device}')
+            
+            cls_predicted_logits_list = []
+            for t_i in range(self.num_cls_task):
+                cls_predicted_logits_list.append(torch.full((self.cls_head_num_classes_list[t_i],), 
+                                                            -torch.inf,
+                                                            dtype=torch.half,
+                                                            device=results_device))
+            
             predicted_logits = torch.zeros((len(self.seg_index) + 1, *data.shape[1:]),
                                            dtype=torch.half,
                                            device=results_device)
@@ -594,12 +657,17 @@ class nnXNetPredictor(object):
                 workon = data[sl][None]
                 workon = workon.to(self.device)
 
-                prediction = self._internal_maybe_mirror_and_predict(workon)[0].to(results_device)
+                prediction_batch, cls_pred_list = self._internal_maybe_mirror_and_predict(workon)
+                prediction = prediction_batch[0].to(results_device)
 
                 if self.use_gaussian:
                     prediction *= gaussian
                 predicted_logits[sl] += prediction
                 n_predictions[sl[1:]] += gaussian
+
+                for t_i in range(self.num_cls_task):
+                    cls_pred_batch = cls_pred_list[t_i].to(results_device)
+                    cls_predicted_logits_list[t_i] = torch.max(cls_predicted_logits_list[t_i], cls_pred_batch[0])
 
             predicted_logits /= n_predictions
             # check for infs
@@ -612,14 +680,12 @@ class nnXNetPredictor(object):
             empty_cache(self.device)
             empty_cache(results_device)
             raise e
-        return predicted_logits
+        return predicted_logits, cls_predicted_logits_list
 
     @torch.inference_mode()
     def predict_sliding_window_return_logits(self, input_image: torch.Tensor) \
             -> Union[np.ndarray, torch.Tensor]:
         assert isinstance(input_image, torch.Tensor)
-        self.network = self.network.to(self.device)
-        self.network.eval()
 
         empty_cache(self.device)
 
@@ -647,21 +713,21 @@ class nnXNetPredictor(object):
             if self.perform_everything_on_device and self.device != 'cpu':
                 # we need to try except here because we can run OOM in which case we need to fall back to CPU as a results device
                 try:
-                    predicted_logits = self._internal_predict_sliding_window_return_logits(data, slicers,
+                    predicted_logits, cls_predicted_logits_list = self._internal_predict_sliding_window_return_logits(data, slicers,
                                                                                            self.perform_everything_on_device)
                 except RuntimeError:
                     print(
                         'Prediction on device was unsuccessful, probably due to a lack of memory. Moving results arrays to CPU')
                     empty_cache(self.device)
-                    predicted_logits = self._internal_predict_sliding_window_return_logits(data, slicers, False)
+                    predicted_logits, cls_predicted_logits_list = self._internal_predict_sliding_window_return_logits(data, slicers, False)
             else:
-                predicted_logits = self._internal_predict_sliding_window_return_logits(data, slicers,
+                predicted_logits, cls_predicted_logits_list = self._internal_predict_sliding_window_return_logits(data, slicers,
                                                                                        self.perform_everything_on_device)
 
             empty_cache(self.device)
             # revert padding
             predicted_logits = predicted_logits[(slice(None), *slicer_revert_padding[1:])]
-        return predicted_logits
+        return predicted_logits, cls_predicted_logits_list
 
 
 def predict_entry_point_modelfolder():
