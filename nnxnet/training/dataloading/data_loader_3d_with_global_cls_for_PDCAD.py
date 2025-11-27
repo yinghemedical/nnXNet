@@ -15,7 +15,6 @@ class nnXNetDataLoader3DWithGlobalCls(nnXNetDataLoaderBase):
         """
         super().__init__(*args, **kwargs)
         
-        self.case_sampling_weight_path = os.path.join("/yinghepool/shipengcheng/Dataset/nnUNet/nnUNet_raw/Dataset303_PDCAD", 'train_case_sampling_weight.csv')
         self.csv_path = os.path.join("/yinghepool/shipengcheng/Dataset/nnUNet/nnUNet_raw/Dataset303_PDCAD", 'cls_data.csv')
         
         self.use_sampling_weight = None  #TODO
